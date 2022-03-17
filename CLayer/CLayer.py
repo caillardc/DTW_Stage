@@ -11,174 +11,206 @@ def scalarDistance(x,y):
 
 #Fonction qui crée la matrice DTW
 @tf.function
-def DTW_TF(S, S1, d=euclideanDistance):
-    cost_matrix = []
-    cost_matrix.append(tf.cast(tf.stack([0, *([np.inf] * S1.shape[0])]), "float32"))
-    for i in range(1,S.shape[0]+1):
-        sub_cost_j = [np.inf]
-        for j in range(1, S1.shape[0]+1):
+def DTW_TF(S, S1, d=euclideanDistance, only_cost=False):
+    cost_matrix = tf.TensorArray(dtype=tf.float32, size=S.shape[0]+1)
+    cost_matrix = cost_matrix.write(0, tf.cast(tf.stack([0, *([np.inf] * S1.shape[0])]), "float32"))
+    for i in tf.range(1,S.shape[0]+1):
+        sub_cost_j = tf.TensorArray(dtype=tf.float32, size=S1.shape[0]+1)
+        sub_cost_j = sub_cost_j.write(0, np.inf)
+        for j in tf.range(1, S1.shape[0]+1):
             dst = d(S[i-1], S1[j-1])
             mat_dt =[
-                dst + sub_cost_j[j-1],
-                dst + cost_matrix[i-1][j-1],
-                dst + cost_matrix[i-1][j]
+                dst + sub_cost_j.stack()[j-1],
+                dst + cost_matrix.stack()[i-1, j-1],
+                dst + cost_matrix.stack()[i-1, j]
             ]
-            sub_cost_j.append(tf.reduce_min(mat_dt))
-        cost_matrix.append(tf.stack(sub_cost_j))
-    return DTW_minimal_path(tf.stack(cost_matrix))
+            sub_cost_j = sub_cost_j.write(j, tf.reduce_min(mat_dt))
+        cost_matrix = cost_matrix.write(i, sub_cost_j.stack())
+    if only_cost:
+        return cost_matrix.stack()[-1, -1]
+    return cost_matrix.stack()
 
 
-# Renvoie le chemin dtw optimal en 2 fonctions
-@tf.function
-def loop_function(i, j, best_path, compteur, cost_mat):
-    compteur += 1
-    cost_min = tf.stack([
-        cost_mat[i-1, j-1],
-        cost_mat[i, j-1],
-        cost_mat[i-1, j]
-    ])
-    n_min = tf.math.argmin(cost_min)
-    i, j = tf.case([
-        (tf.equal(n_min,0), lambda: (i-1, j-1)),
-        (tf.equal(n_min,1), lambda: (i, j-1)),
-        (tf.equal(n_min,2), lambda: (i-1, j))
-    ])
-    best_path = best_path.write(compteur, (i-1, j-1))
-    return i, j, best_path, compteur, cost_mat
 
-@tf.function
-def DTW_minimal_path(cost_mat):
-    i = cost_mat.shape[0] - 1
-    j = cost_mat.shape[1] - 1
-    compteur = 0
-    best_path = tf.TensorArray(dtype=tf.int32, size=0, dynamic_size=True)
-    best_path = best_path.write(compteur, (i-1, j-1))
-    cond = lambda i, j, best_path, compteur, cost_mat: tf.logical_and(tf.greater(i, 0), tf.greater(j, 0))
-    i, j, best_path, compteur, cost_mat = tf.while_loop(cond, loop_function, [i, j, best_path, compteur, cost_mat])
-    best_path = tf.cast(best_path.stack()[:-1][::-1], tf.int64)
+# Classique convolution
+class CNN1D(tf.keras.layers.Conv1D):
+    def call(self, inputs):
+        i = 0
+        output = tf.TensorArray(dtype=tf.dtypes.float32, size=(tf.shape(inputs)[0]))
+        inputs = tf.expand_dims(inputs, 1)
+        for inp in tf.image.extract_patches(images=inputs,
+                                            sizes=[1, 1, self.kernel_size[0], 1],
+                                            strides=[1, 1, *self.strides, 1],
+                                            rates=[1, 1, 1, 1],
+                                            padding=self.padding.upper()):
+            w_a = tf.transpose(self.kernel, perm=[2, 1, 0])
+            inp = tf.reshape(inp, tf.TensorShape((inp.shape[1], *w_a.shape[1:][::-1])))
+            output = output.write(i, tf.vectorized_map(lambda inp_i : tf.linalg.trace(inp_i@w_a) + self.bias, inp))
+            i+=1
+        return tf.nn.relu(output.stack())
 
-    mat_allign = tf.sparse.SparseTensor(indices=best_path,
-                                        values=tf.ones(tf.shape(best_path)[0], dtype=tf.dtypes.float32),
-                                        dense_shape=[cost_mat.shape[0] - 1, cost_mat.shape[1] - 1])
-    return mat_allign
-
-# renvoie le chemin qui maximise la matrice DTW pour Schulman
-def DTW_maximal_path(cost_mat):
-    i = cost_mat.shape[0] - 1
-    j = cost_mat.shape[1] - 1
-    compteur = 0
-    path_input = tf.TensorArray(dtype=tf.int32, size=0, dynamic_size=True)
-    path_input = path_input.write(compteur, i-1)
-
-    path_output = tf.TensorArray(dtype=tf.int32, size=0, dynamic_size=True)
-    path_output = path_output.write(compteur, j-1)
-    while tf.greater(i, 0) and tf.greater(j, 0):
+#Iwana
+class DWA_CNN(tf.keras.layers.Conv1D):
+    # Renvoie le chemin dtw optimal en 2 fonctions
+    @tf.function
+    def loop_function(self, i, j, best_path, compteur, cost_mat):
         compteur += 1
-        cost_max = tf.stack([
+        cost_min = tf.stack([
             cost_mat[i-1, j-1],
             cost_mat[i, j-1],
             cost_mat[i-1, j]
         ])
-        n_max = tf.math.argmax(cost_max)
-        if tf.equal(n_max,0):
-            i += -1
-            j += -1
-        elif tf.equal(n_max,1):
-            j += -1
-        elif tf.equal(n_max, 2):
-            i += -1
-        path_input = path_input.write(compteur, i - 1)
-        path_output = path_output.write(compteur, j - 1)
-    return path_input.stack()[:-1][::-1], path_output.stack()[:-1][::-1]
+        n_min = tf.math.argmin(cost_min)
+        i, j = tf.case([
+            (tf.equal(n_min,0), lambda: (i-1, j-1)),
+            (tf.equal(n_min,1), lambda: (i, j-1)),
+            (tf.equal(n_min,2), lambda: (i-1, j))
+        ])
+        best_path = best_path.write(compteur, (i-1, j-1))
+        return i, j, best_path, compteur, cost_mat
 
-# Classique convolution
-def convolution_1D(inputs, weights):
-    weights = tf.transpose(weights, perm=[2, 1, 0])
-    output_list = []
-    for j in range(0, inputs.shape[-2] - weights.shape[-1] + 1):
-        output_list.append(tf.linalg.trace(tf.linalg.matmul(inputs[j:j + weights.shape[-1]], weights)))
-    output_final = tf.stack(output_list)
-    return output_final
+    @tf.function
+    def DTW_minimal_path(self, S, S1):
+        cost_mat = DTW_TF(S, S1)
+        i = cost_mat.shape[0] - 1
+        j = cost_mat.shape[1] - 1
+        compteur = 0
+        best_path = tf.TensorArray(dtype=tf.int32, size=0, dynamic_size=True)
+        best_path = best_path.write(compteur, (i-1, j-1))
+        cond = lambda i, j, best_path, compteur, cost_mat: tf.logical_and(tf.greater(i, 0), tf.greater(j, 0))
+        i, j, best_path, compteur, cost_mat = tf.while_loop(cond, self.loop_function, [i, j, best_path, compteur, cost_mat])
+        best_path = tf.cast(best_path.stack()[:-1][::-1], tf.int64)
 
-# permet de realigner les séries et réalise le calcul matriciel pour les poids chaque partie d'input
-@tf.function
-def slice_alignment(slice_input, weights, minmax='min'):
-    output_list = tf.TensorArray(dtype=tf.float32, size=(weights.shape[0]))
-    for filt in range(weights.shape[0]):
-        # recuperation des "meilleurs chemins"
-        t_weight = weights[filt]
-        # Iwana DWA
-        mat_allign = tf.sparse.to_dense(DTW_TF(slice_input, t_weight))
-        # réalignement
-        mat_allign = tf.reshape(mat_allign, (slice_input.shape[0], t_weight.shape[0]))
-        output_list = output_list.write(filt, mat_allign)
-    w_allign = output_list.stack() @ weights
-    output = tf.math.reduce_sum(slice_input*weights, axis=[2,1])
-    return output
+        mat_allign = tf.sparse.SparseTensor(indices=best_path,
+                                            values=tf.ones(tf.shape(best_path)[0], dtype=tf.dtypes.float32),
+                                            dense_shape=[cost_mat.shape[0] - 1, cost_mat.shape[1] - 1])
+        return mat_allign
 
+    # permet de realigner les séries et réalise le calcul matriciel pour les poids chaque partie d'input
+    @tf.function
+    def slice_alignment(self, slice_input, weights, minmax='min'):
+        output_list = tf.TensorArray(dtype=tf.float32, size=(weights.shape[0]))
+        for filt in range(weights.shape[0]):
+            # recuperation des "meilleurs chemins"
+            t_weight = weights[filt]
+            # Iwana DWA
+            mat_allign = tf.sparse.to_dense(self.DTW_minimal_path(slice_input, t_weight))
+            # réalignement
+            mat_allign = tf.reshape(mat_allign, (slice_input.shape[0], t_weight.shape[0]))
+            output_list = output_list.write(filt, mat_allign)
+        w_allign = output_list.stack() @ weights
+        output = tf.linalg.trace(tf.matmul(slice_input,w_allign, transpose_b=True))
+        return output
 
-# Fonction de base pour DWA de iwana
-@tf.function
-def conv1D_weight_alignment(inputs, weights):
-    weights = tf.transpose(weights, perm=[2, 0, 1])
-    output_final = tf.TensorArray(dtype=tf.float32, size=(inputs.shape[-2] - weights.shape[-2] + 1))
-    for j in range(0, inputs.shape[-2] - weights.shape[-2] + 1):
-        res = slice_alignment(tf.slice(inputs, (j, 0), (weights.shape[-2:])), weights)
-        output_final = output_final.write(j, res)
-    return output_final.stack()
-
-# Fonction de base pour schulman cnn_dtw
-def conv1D_schulman_dtw(inputs, weights):
-    weights = tf.transpose(weights, perm=[2, 0, 1])
-    tensor_iter = tf.constant([*range(0, inputs.shape[-2] - weights.shape[-2] + 1)])
-    output_final = tf.map_fn(lambda j: slice_alignment(tf.slice(inputs, (j, 0), (weights.shape[-2:])), weights, 'max'),
-                             tensor_iter, fn_output_signature=tf.float32)
-    return output_final
-
-
-## Buza & Antal
-# Permet de récuperer les poids de la matrice dtw
-def dtw_weight_return(slice_input, weights):
-    output_list = []
-    for filt in range(weights.shape[0]):
-        t_input = slice_input
-        t_weight = weights[filt]
-        cost_dtw = DTW_TF(t_input, t_weight, minmaxpath='cost')
-        output_list.append(cost_dtw)
-    return tf.stack(output_list)
-
-
-def conv1D_dynamic(inputs, weights):
-    weights = tf.transpose(weights, perm=[2, 0, 1])
-    tensor_iter = tf.constant([*range(0, inputs.shape[-2] - weights.shape[-2] + 1)])
-    output_final = tf.map_fn(lambda j: dtw_weight_return(tf.slice(inputs, (j, 0), (weights.shape[-2:])), weights),
-                             tensor_iter, fn_output_signature=tf.float32)
-    return output_final
-##
-
-
-class CNN1D(tf.keras.layers.Conv1D):
     def call(self, inputs):
-        output = tf.vectorized_map(lambda inp: convolution_1D(inp, self.kernel) + self.bias, inputs)
-        return tf.nn.relu(output)
-
-#Iwana
-class DWA_CNN(tf.keras.layers.Conv1D):
-    def call(self, inputs):
-        output = tf.map_fn(lambda inp: conv1D_weight_alignment(inp, self.kernel) + self.bias, inputs)
-        return tf.nn.relu(output)
+        i = 0
+        output = tf.TensorArray(dtype=tf.dtypes.float32, size=(tf.shape(inputs)[0]))
+        inputs = tf.expand_dims(inputs, 1)
+        for inp in tf.image.extract_patches(images=inputs,
+                                            sizes=[1, 1, self.kernel_size[0], 1],
+                                            strides=[1, 1, *self.strides, 1],
+                                            rates=[1, 1, 1, 1],
+                                            padding=self.padding.upper()):
+            w_a = tf.transpose(self.kernel, perm=[2, 0, 1])
+            inp = tf.reshape(inp, tf.TensorShape((inp.shape[1], *w_a.shape[1:])))
+            output = output.write(i, tf.map_fn(lambda inp_i : self.slice_alignment(inp_i, w_a) + self.bias, inp))
+            i += 1
+        return tf.nn.relu(output.stack())
 
 ## Buza & Antal
 class DCNN(CNN1D):
+    ## Buza & Antal
+    # Permet de récuperer les poids de la matrice dtw
+    def dtw_weight_return(self, slice_input, weights):
+        output_list = []
+        for filt in range(weights.shape[0]):
+            t_weight = weights[filt]
+            cost_dtw = DTW_TF(slice_input, t_weight, only_cost=True)
+            output_list.append(cost_dtw)
+        return tf.stack(output_list)
+
     def call(self, inputs):
-        output = tf.map_fn(lambda inp: conv1D_dynamic(inp, self.w) + self.b, inputs)
-        return tf.nn.relu(output)
+        i = 0
+        output = tf.TensorArray(dtype=tf.dtypes.float32, size=(tf.shape(inputs)[0]))
+        inputs = tf.expand_dims(inputs, 1)
+        for inp in tf.image.extract_patches(images=inputs,
+                                            sizes=[1, 1, self.kernel_size[0], 1],
+                                            strides=[1, 1, *self.strides, 1],
+                                            rates=[1, 1, 1, 1],
+                                            padding=self.padding.upper()):
+            w_a = tf.transpose(self.kernel, perm=[2, 0, 1])
+            inp = tf.reshape(inp, tf.TensorShape((inp.shape[1], *w_a.shape[1:])))
+            output = output.write(i, tf.map_fn(lambda inp_i : self.dtw_weight_return(inp_i, w_a) + self.bias, inp))
+            i += 1
+        return tf.nn.relu(output.stack())
 
 #Schulman
 class DTW_CNN(CNN1D):
+    # renvoie le chemin qui maximise la matrice DTW pour Schulman
+    @tf.function
+    def loop_function(self, i, j, best_path, compteur, cost_mat):
+        compteur += 1
+        cost_min = tf.stack([
+            cost_mat[i-1, j-1],
+            cost_mat[i, j-1],
+            cost_mat[i-1, j]
+        ])
+        n_max = tf.math.argmax(cost_min)
+        i, j = tf.case([
+            (tf.equal(n_max,0), lambda: (i-1, j-1)),
+            (tf.equal(n_max,1), lambda: (i, j-1)),
+            (tf.equal(n_max,2), lambda: (i-1, j))
+        ])
+        best_path = best_path.write(compteur, (i-1, j-1))
+        return i, j, best_path, compteur, cost_mat
+
+    @tf.function
+    def DTW_maximal_path(self, S, S1):
+        cost_mat = DTW_TF(S, S1, scalarDistance)
+        i = cost_mat.shape[0] - 1
+        j = cost_mat.shape[1] - 1
+        compteur = 0
+        best_path = tf.TensorArray(dtype=tf.int32, size=0, dynamic_size=True)
+        best_path = best_path.write(compteur, (i-1, j-1))
+        cond = lambda i, j, best_path, compteur, cost_mat: tf.logical_and(tf.greater(i, 0), tf.greater(j, 0))
+        i, j, best_path, compteur, cost_mat = tf.while_loop(cond, self.loop_function, [i, j, best_path, compteur, cost_mat])
+        best_path = tf.cast(best_path.stack()[:-1][::-1], tf.int64)
+        mat_allign = tf.sparse.SparseTensor(indices=best_path,
+                                            values=tf.ones(tf.shape(best_path)[0], dtype=tf.dtypes.float32),
+                                            dense_shape=[cost_mat.shape[0] - 1, cost_mat.shape[1] - 1])
+        return mat_allign
+
+    # permet de realigner les séries et réalise le calcul matriciel pour les poids chaque partie d'input
+    @tf.function
+    def slice_alignment(self, slice_input, weights):
+        output_list = tf.TensorArray(dtype=tf.float32, size=(weights.shape[0]))
+        for filt in range(weights.shape[0]):
+            # recuperation des "meilleurs chemins"
+            t_weight = weights[filt]
+            # Iwana DWA
+            mat_allign = tf.sparse.to_dense(self.DTW_maximal_path(slice_input, t_weight))
+            # réalignement
+            mat_allign = tf.reshape(mat_allign, (slice_input.shape[0], t_weight.shape[0]))
+            output_list = output_list.write(filt, mat_allign)
+        w_allign = output_list.stack() @ weights
+        output = tf.linalg.trace(tf.matmul(slice_input,w_allign, transpose_b=True))
+        return output
+
     def call(self, inputs):
-        output = tf.map_fn(lambda inp: conv1D_schulman_dtw(inp, self.w) + self.b, inputs)
-        return tf.nn.relu(output)
+        i = 0
+        output = tf.TensorArray(dtype=tf.dtypes.float32, size=(tf.shape(inputs)[0]))
+        inputs = tf.expand_dims(inputs, 1)
+        for inp in tf.image.extract_patches(images=inputs,
+                                            sizes=[1, 1, self.kernel_size[0], 1],
+                                            strides=[1, 1, *self.strides, 1],
+                                            rates=[1, 1, 1, 1],
+                                            padding=self.padding.upper()):
+            w_a = tf.transpose(self.kernel, perm=[2, 0, 1])
+            inp = tf.reshape(inp, tf.TensorShape((inp.shape[1], *w_a.shape[1:])))
+            output = output.write(i, tf.map_fn(lambda inp_i : self.slice_alignment(inp_i, w_a) + self.bias, inp))
+            i += 1
+        return tf.nn.relu(output.stack())
+
 
 def dtw_path(s1, s2):
     if s1.shape[0] == 1:
@@ -203,22 +235,34 @@ def slice_alignment_np(slice_input, weights):
         mat_allign = tf.reshape(mat_allign, (slice_input.shape[0], t_weight.shape[0]))
         output_list = output_list.write(filt, mat_allign)
     w_allign = output_list.stack() @ weights
-    output = tf.math.reduce_sum(slice_input*weights, axis=[2,1])
+    output = tf.math.reduce_sum(slice_input*w_allign, axis=[2,1])
     return output
 
 @tf.function
 def conv1D_weight_alignment_np(inputs, weights):
     weights = tf.transpose(weights, perm=[2, 0, 1])
     output_final = tf.TensorArray(dtype=tf.dtypes.float32, size=(inputs.shape[-2] - weights.shape[-2] + 1))
-    for j in range(0, inputs.shape[-2] - weights.shape[-2] + 1):
+    for j in tf.range(0, inputs.shape[-2] - weights.shape[-2] + 1):
         res = slice_alignment_np(tf.slice(inputs, (j, 0), (weights.shape[-2:])), weights)
         output_final = output_final.write(j, res)
     return output_final.stack()
 
 class DWA_CNN_np(tf.keras.layers.Conv1D):
     def call(self, inputs):
-        output = tf.map_fn(lambda inp: conv1D_weight_alignment_np(inp, self.kernel) + self.bias, inputs)
+        i = 0
+        output = tf.TensorArray(dtype=tf.dtypes.float32, size=(tf.shape(inputs)[0]))
+        inputs = tf.expand_dims(inputs, 1)
+        for inp in tf.image.extract_patches(images=inputs,
+                                            sizes=[1, 1, self.kernel_size[0], 1],
+                                            strides=[1, 1, *self.strides, 1],
+                                            rates=[1, 1, 1, 1],
+                                            padding=self.padding.upper()):
+            w_a = tf.transpose(self.kernel, perm=[2, 0, 1])
+            inp = tf.reshape(inp, tf.TensorShape((inp.shape[1], *w_a.shape[1:])))
+            output = output.write(i, tf.map_fn(lambda inp_i : slice_alignment_np(inp_i, w_a) + self.bias, inp))
+            i += 1
         return tf.nn.relu(output)
+
 
 if __name__ == "__main__":
     import numpy as np
@@ -235,7 +279,7 @@ if __name__ == "__main__":
     tf.random.set_seed(1234)
     model_conv = Sequential([
         InputLayer(randi.shape[1:]),
-        Conv1D(5, 7, activation='relu', kernel_initializer='glorot_uniform'),
+        Conv1D(5, 7, 3, activation='relu', kernel_initializer='glorot_uniform'),
         Flatten(),
         Dense(3, activation="softmax")
     ])
@@ -248,7 +292,7 @@ if __name__ == "__main__":
     tf.random.set_seed(1234)
     model_conv = Sequential([
         InputLayer(randi.shape[1:]),
-        CNN1D(5, 7),
+        CNN1D(5, 7, 3, kernel_initializer='glorot_uniform'),
         Flatten(),
         Dense(3, activation="softmax")
     ])
@@ -300,7 +344,7 @@ if __name__ == "__main__":
     tf.random.set_seed(1234)
     model_conv = Sequential([
         InputLayer(randi.shape[1:]),
-        DTW_CNN(5, 4),
+        DTW_CNN(5, 4, 1),
         Flatten(),
         Dense(3, activation="softmax")
     ])
@@ -323,33 +367,3 @@ if __name__ == "__main__":
 
     DTW_TF(S, S1)
     dtw_path(S, S1)
-
-
-    tf.random.set_seed(1234)
-    model = Sequential([
-        InputLayer(randi.shape[1:]),
-        DWA_CNN_np(5, 7),
-        Flatten(),
-        Dense(3, activation='softmax')
-    ])
-
-    model.summary()
-    model.compile(loss='categorical_crossentropy', metrics='accuracy')
-
-    tf.random.set_seed(1234)
-    model_tensor = Sequential([
-        InputLayer(randi.shape[1:]),
-        DWA_CNN(5, 7),
-        Flatten(),
-        Dense(3, activation='softmax')
-    ])
-
-    model_tensor.summary()
-    model_tensor.compile(loss='categorical_crossentropy', metrics='accuracy')
-
-
-    weight_debut_dwa_numpy = model.weights[1]
-    weight_debut_dwa_tensor = model_tensor.weights[1]
-
-    model_tensor.fit(randi, y_train, epochs=1)
-    model.fit(randi, y_train, epochs=1)
