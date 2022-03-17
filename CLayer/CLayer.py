@@ -41,7 +41,7 @@ class CNN1D(tf.keras.layers.Conv1D):
         for inp in tf.image.extract_patches(images=inputs,
                                             sizes=[1, 1, self.kernel_size[0], 1],
                                             strides=[1, 1, *self.strides, 1],
-                                            rates=[1, 1, 1, 1],
+                                            rates=[1, 1, *self.dilation_rate, 1],
                                             padding=self.padding.upper()):
             w_a = tf.transpose(self.kernel, perm=[2, 1, 0])
             inp = tf.reshape(inp, tf.TensorShape((inp.shape[1], *w_a.shape[1:][::-1])))
@@ -279,7 +279,7 @@ if __name__ == "__main__":
     tf.random.set_seed(1234)
     model_conv = Sequential([
         InputLayer(randi.shape[1:]),
-        Conv1D(5, 7, 3, activation='relu', kernel_initializer='glorot_uniform'),
+        Conv1D(5, 2, activation='relu', kernel_initializer='glorot_uniform'),
         Flatten(),
         Dense(3, activation="softmax")
     ])
@@ -292,7 +292,7 @@ if __name__ == "__main__":
     tf.random.set_seed(1234)
     model_conv = Sequential([
         InputLayer(randi.shape[1:]),
-        CNN1D(5, 7, 3, kernel_initializer='glorot_uniform'),
+        CNN1D(5, 2, kernel_initializer='glorot_uniform'),
         Flatten(),
         Dense(3, activation="softmax")
     ])

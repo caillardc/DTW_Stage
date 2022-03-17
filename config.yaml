@@ -1,0 +1,28 @@
+#INITIAL SETTINGS
+data_directory: ../data/
+data_name: 'ArrowHead'
+test_size: 0.2
+model_directory: ../models/
+
+experiment_name: 'baseline'
+
+task: 'train'
+
+model_dwa:
+  training:
+    num_epochs: 20
+    optimizer: 'adam'
+
+  conv1d:
+    filters: 5
+    kernel_size: 4
+    strides : 1
+    dilation_rate: 1
+    activation: 'relu'
+
+  model:
+    n_conv_layer: 1
+    n_dense_layer: 0
+
+result:
+  filepath: 'res/'
