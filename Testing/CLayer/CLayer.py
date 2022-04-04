@@ -14,7 +14,7 @@ def scalarDistance(x,y):
 def DTW_TF(S, S1, d=euclideanDistance, only_cost=False):
     cost_matrix = tf.TensorArray(dtype=tf.float32, size=S.shape[0]+1)
     cost_matrix = cost_matrix.write(0, tf.cast(tf.stack([0, *([np.inf] * S1.shape[0])]), "float32"))
-    for i in tf.range(1,S.shape[0]+1):
+    for i in range(1,S.shape[0]+1):
         sub_cost_j = tf.TensorArray(dtype=tf.float32, size=S1.shape[0]+1)
         sub_cost_j = sub_cost_j.write(0, np.inf)
         for j in tf.range(1, S1.shape[0]+1):
@@ -118,7 +118,8 @@ class DWA_CNN(tf.keras.layers.Conv1D):
         return tf.nn.relu(output.stack())
 
 ## Buza & Antal
-class DCNN(CNN1D):
+class DCNN(tf.keras.layers.Conv1D):
+
     ## Buza & Antal
     # Permet de récuperer les poids de la matrice dtw
     def dtw_weight_return(self, slice_input, weights):
@@ -338,7 +339,7 @@ if __name__ == "__main__":
 
     model_conv.summary()
     model_conv.compile(loss='categorical_crossentropy', metrics='accuracy')
-    model_conv.fit(randi, y_train, epochs=20)
+    model_conv.fit(randi, y_train, epochs=2)
 
     # DTW_CNN Test
     tf.random.set_seed(1234)
@@ -348,22 +349,3 @@ if __name__ == "__main__":
         Flatten(),
         Dense(3, activation="softmax")
     ])
-
-    model_conv.summary()
-    model_conv.compile(loss='categorical_crossentropy', metrics='accuracy')
-    model_conv.fit(randi, y_train, epochs=20)
-
-    S = [1, 3, 3, 3, 2, 0, 1]
-    S = randi[1]
-    S1 = randi[2]
-    S1 = [0, 1, 3, 2, 2, 0, 1]
-
-    # distance = dtw.distance(S, S1)
-    # print(distance)
-    # print(dtw.warping_paths(S, S1)[1])
-
-    S = tf.convert_to_tensor(S)
-    S1 = tf.convert_to_tensor(S1)
-
-    DTW_TF(S, S1)
-    dtw_path(S, S1)

@@ -1,0 +1,46 @@
+#INITIAL SETTINGS
+data_directory: ../data/
+data_type : 'UCI'
+data_name: 'ADL'
+test_size: 0.2
+
+experiment_name: 'iwana_structure'
+
+task: 'train'
+
+#Training
+epochs: 100
+optimizer: ['Adam']
+learning_rate : [0.01]
+decay_rate : [0.0001]
+batch_size : 100
+
+batch_norm : ['True']
+
+conv_layer_type : ["Conv1D", "CNN1D"]
+
+n_conv_layer: 2
+n_dense_layer: 2
+
+conv1d_0:
+    filters: 50
+    kernel_size: 8
+    strides : 2
+    dilation_rate: 1
+    kernel_initializer : 'RandomNormal'
+
+
+conv1d_1:
+    filters: 50
+    kernel_size: 8
+    strides : 2
+    dilation_rate: 1
+    kernel_initializer : 'RandomNormal'
+
+dense_layer_0:
+    units: 400
+    activation: 'tanh'
+
+dense_layer_1:
+    units: 100
+    activation: 'tanh'
